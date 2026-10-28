@@ -40,8 +40,12 @@ ATURAN:
 - Jangan mengarang judul, penulis, DOI, tahun, atau temuan.
 - Hanya simpulkan temuan dari abstrak yang tersedia. Jika abstrak
   tidak ada, katakan abstraknya belum tersedia.
-- Pertanyaan konseptual umum (misal definisi metode) boleh dijawab
-  dari pengetahuan umum, tapi jangan sebut itu sebagai isi paper.
+- Pertanyaan konseptual tentang metode atau istilah akademik boleh
+  dijawab dari pengetahuan umum, tapi jangan sebut itu sebagai isi
+  paper.
+- Pertanyaan di luar literatur akademik (resep, hewan, hiburan, dll.)
+  tolak singkat tanpa menjawab isinya, dan jangan mengaitkannya
+  dengan paper yang tidak relevan.
 - Jawab dalam bahasa Indonesia secara ringkas.
 
 FORMAT JAWABAN:
@@ -105,24 +109,49 @@ def format_papers(papers: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-async def make_search_query(question: str) -> str:
-    """Ubah pertanyaan user jadi kata kunci pencarian pendek."""
+OFF_TOPIC = "OFF_TOPIC"
+
+
+async def make_search_query(
+    question: str,
+    history: list[dict] | None = None,
+) -> str:
+    """Ubah pesan jadi kata kunci pencarian, atau OFF_TOPIC kalau
+    pesan tidak berkaitan dengan literatur akademik."""
     if client is None:
         return question
+
+    recent = "\n".join(
+        f"{'Pengguna' if t['role'] == 'user' else 'Bot'}: {t['text'][:300]}"
+        for t in (history or [])[-4:]
+    ) or "(kosong)"
 
     try:
         response = await client.aio.models.generate_content(
             model=GEMINI_MODEL,
             contents=(
-                "Ubah pesan berikut menjadi kata kunci pencarian "
-                "paper akademik dalam bahasa Inggris, maksimal 8 kata. "
-                "Balas HANYA dengan kata kuncinya.\n\n"
-                f"Pesan: {question}"
+                "Kamu menyaring pesan untuk bot pencari literatur "
+                "akademik.\n\n"
+                "Jika pesan terakhir BUKAN tentang literatur akademik "
+                "(paper, jurnal, metode penelitian, temuan, sitasi, DOI, "
+                "topik riset) dan bukan lanjutan dari percakapan akademik "
+                f"di bawah, balas HANYA dengan {OFF_TOPIC}. Contoh "
+                "OFF_TOPIC: resep masakan, hewan peliharaan, hiburan, "
+                "obrolan umum, pengetahuan umum non-akademik.\n\n"
+                "Jika akademik, ubah menjadi kata kunci pencarian paper "
+                "dalam bahasa Inggris, maksimal 8 kata, dan balas HANYA "
+                "dengan kata kuncinya. Untuk pesan lanjutan, ambil topik "
+                "dari percakapan sebelumnya.\n\n"
+                f"Percakapan sebelumnya:\n{recent}\n\n"
+                f"Pesan terakhir: {question}"
             ),
             config=types.GenerateContentConfig(temperature=0),
         )
 
         query = (response.text or "").strip().strip('"')
+
+        if OFF_TOPIC in query.upper():
+            return OFF_TOPIC
 
         return query[:100] or question
 

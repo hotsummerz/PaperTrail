@@ -30,7 +30,7 @@ from config import (
     validate_bot_config,
 )
 
-from llm import ask_gemini, make_search_query, summarize_findings
+from llm import OFF_TOPIC, ask_gemini, make_search_query, summarize_findings
 from search import search_papers
 
 
@@ -44,39 +44,7 @@ logger = logging.getLogger("papertrail")
 logging.getLogger("neo4j.notifications").setLevel(logging.WARNING)
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
-
-ALLOWED_KEYWORDS = {
-    "paper",
-    "jurnal",
-    "literatur",
-    "literature",
-    "penelitian",
-    "research",
-    "doi",
-    "abstract",
-    "abstrak",
-    "metode",
-    "method",
-    "temuan",
-    "finding",
-    "sitasi",
-    "citation",
-    "referensi",
-    "fairness",
-    "bias algoritma",
-    "machine learning",
-    "artificial intelligence",
-    "kecerdasan buatan",
-    "literature matrix",
-    "literature review",
-}
-
 MAX_HISTORY_MESSAGES = 6  # 3 putaran tanya-jawab
-
-
-def is_academic_request(text: str) -> bool:
-    text = text.lower()
-    return any(keyword in text for keyword in ALLOWED_KEYWORDS)
 
 
 def split_message(text: str, limit: int = 4000) -> list[str]:
@@ -241,12 +209,22 @@ async def dbcheck(
         )
 
 
+OFF_TOPIC_REPLY = (
+    "Maaf, aku khusus membantu pencarian dan analisis literatur "
+    "akademik. Coba tanyakan tentang paper, metode penelitian, "
+    "DOI, atau literature review."
+)
+
+
 async def answer_question(
     question: str,
     history: list[dict],
-) -> str:
-    """Cari paper dulu, lalu minta Gemini menjawab berdasarkan hasilnya."""
-    query = await make_search_query(question)
+) -> tuple[str, bool]:
+    """Return (jawaban, on_topic)."""
+    query = await make_search_query(question, history)
+
+    if query == OFF_TOPIC:
+        return OFF_TOPIC_REPLY, False
 
     try:
         papers = await search_papers(query, limit=5)
@@ -254,7 +232,9 @@ async def answer_question(
         logger.exception("OpenAlex error")
         papers = []
 
-    return await ask_gemini(question, papers=papers, history=history)
+    answer = await ask_gemini(question, papers=papers, history=history)
+
+    return answer, True
 
 
 async def handle_text(
@@ -267,25 +247,18 @@ async def handle_text(
     question = update.message.text.strip()
     history = context.user_data.setdefault("history", [])
 
-    # Pesan lanjutan ("jelaskan lebih detail") lolos kalau sudah ada riwayat.
-    if not history and not is_academic_request(question):
-        await update.message.reply_text(
-            "Maaf, aku khusus membantu pencarian dan analisis "
-            "literatur akademik. Coba tanyakan tentang paper, "
-            "metode penelitian, DOI, atau literature review."
-        )
-        return
-
     try:
-        answer = await keep_typing(
+        answer, on_topic = await keep_typing(
             update,
             context,
             answer_question(question, history),
         )
 
-        history.append({"role": "user", "text": question})
-        history.append({"role": "model", "text": answer})
-        del history[:-MAX_HISTORY_MESSAGES]
+        # Pesan off-topic tidak dimasukkan ke riwayat.
+        if on_topic:
+            history.append({"role": "user", "text": question})
+            history.append({"role": "model", "text": answer})
+            del history[:-MAX_HISTORY_MESSAGES]
 
         for part in split_message(answer):
             await update.message.reply_text(part)
@@ -297,7 +270,6 @@ async def handle_text(
             "Maaf, terjadi masalah saat menghubungi Gemini. "
             "Periksa konfigurasi dan terminal aplikasi."
         )
-
 
 async def search_and_summarize(query: str):
     papers = await search_papers(query, limit=5)
