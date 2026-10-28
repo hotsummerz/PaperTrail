@@ -1,0 +1,8 @@
+
+python-telegram-bot
+google-genai
+neo4j
+python-dotenv
+httpx
+pydantic
+pymupdf
